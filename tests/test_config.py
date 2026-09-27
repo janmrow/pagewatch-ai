@@ -25,6 +25,10 @@ interest = "Announcement updates"
 """
 
 
+def fake_classifier(interest: str, diff: str) -> str:
+    return '{"relevant": false, "summary": "Minor edit", "reason": "Outside interest"}'
+
+
 def test_loads_multiple_watches(tmp_path: Path) -> None:
     config = tmp_path / "watches.toml"
     config.write_text(TWO_WATCHES, encoding="utf-8")
@@ -71,6 +75,7 @@ def test_run_uses_separate_baselines(
         "pagewatch.watch.fetch_text",
         lambda url, selector: content[url.rsplit("/", 1)[-1]],
     )
+    monkeypatch.setattr("pagewatch.cli.classifier_from_env", lambda: fake_classifier)
     args = ["run", "--config", str(config), "--state-dir", str(state_dir)]
 
     assert main(args) == 0
@@ -97,6 +102,7 @@ def test_one_failed_watch_does_not_stop_others(
     config = tmp_path / "watches.toml"
     config.write_text(TWO_WATCHES, encoding="utf-8")
     state_dir = tmp_path / "state"
+    monkeypatch.setattr("pagewatch.cli.classifier_from_env", lambda: fake_classifier)
 
     def fetch(url: str, selector: str) -> str:
         if url.endswith("/first"):
@@ -121,6 +127,7 @@ def test_url_encoding_error_does_not_stop_other_watches(
         encoding="utf-8",
     )
     state_dir = tmp_path / "state"
+    monkeypatch.setattr("pagewatch.cli.classifier_from_env", lambda: fake_classifier)
     response = MagicMock()
     response.__enter__.return_value = response
     response.read.return_value = b"<h1>News today</h1>"

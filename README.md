@@ -2,7 +2,7 @@
 
 Pagewatch AI is a small CLI project for monitoring configured web pages and emailing users about meaningful changes. Its intended flow is: fetch, extract, normalize, compare, classify relevance, notify, then commit state.
 
-**Status:** configured change detection. The CLI can check multiple HTTP/HTML pages with CSS selectors and compare their normalized text with local baselines. It does not yet classify changes or send email. The planned v0.1 behavior is specified in [docs/v0.1.md](docs/v0.1.md).
+**Status:** configured change detection and LLM relevance classification. The CLI can check multiple HTTP/HTML pages with CSS selectors, compare their normalized text with local baselines, and classify changes through an OpenAI-compatible Chat Completions endpoint. It does not send email yet. The planned v0.1 behavior is specified in [docs/v0.1.md](docs/v0.1.md).
 
 ## Fetch text
 
@@ -38,11 +38,18 @@ selector = "article"
 interest = "New announcements"
 ```
 
+Set the Chat Completions endpoint, API key, and model in the environment before running:
+
 ```sh
+export PAGEWATCH_LLM_URL=https://opencode.ai/inference/openai/v1/chat/completions
+export PAGEWATCH_LLM_API_KEY="your-service-account-key"
+export PAGEWATCH_LLM_MODEL="your-chat-completions-model-id"
 uv run pagewatch run --config watches.toml --state-dir .pagewatch
 ```
 
-Each watch needs `id`, `url`, `selector`, and nonempty `interest`. IDs must be unique and contain only letters, digits, hyphens, or underscores, beginning with a letter or digit. Each baseline is saved as `<state-dir>/<id>.json`. All watches run even if one fails; the command exits with status 1 if any watch fails. TOML parsing and field validation run before any watch.
+The URL above is the [OpenCode Console Inference API](https://opencode.ai/v2/docs/console/inference/). `PAGEWATCH_LLM_URL` is the complete Chat Completions endpoint, not just a base URL. To use [OpenAI Chat Completions](https://developers.openai.com/api/docs/guides/prompt-engineering), set it to `https://api.openai.com/v1/chat/completions` and provide an OpenAI API key and a model that supports that endpoint. Other providers with the same request, Bearer authentication, and response format can be used by changing these three variables. The endpoint must use HTTPS, and API redirects are refused to keep the key at the configured endpoint. Keep the API key out of `watches.toml` and Git.
+
+Each watch needs `id`, `url`, `selector`, and nonempty `interest`. IDs must be unique and contain only letters, digits, hyphens, or underscores, beginning with a letter or digit. Each baseline is saved as `<state-dir>/<id>.json`. All watches run even if one fails; the command exits with status 1 if any watch fails. TOML and LLM settings are validated before any watch. The first run establishes a baseline without calling the LLM. Later changes are classified and print the diff, relevance decision, summary, and reason.
 
 ## Relevance classification contract
 
@@ -52,7 +59,7 @@ The internal watcher can pass `interest` and a word-level diff to an injected cl
 {"relevant": true, "summary": "A deadline changed", "reason": "Matches the watch interest"}
 ```
 
-Before classification, the watcher saves one unresolved content snapshot alongside the last handled baseline. A classifier error or relevant change without a successful notification keeps that snapshot for the next classified check, even if the page later changes or reverts. An irrelevant decision or successful notification advances the baseline and clears the snapshot. Detection-only `watch` and `run` refuse to advance a watch with an unresolved snapshot or a legacy `pending: true` marker. Old markers do not contain the changed content; if it is no longer on the page, manual recovery is needed. A notification may be delivered more than once if delivery succeeds but saving the baseline fails. This contract is tested with fakes. The CLI still does not invoke a classifier or notifier, and no LLM API or email service is connected.
+Before classification, the watcher saves one unresolved content snapshot alongside the last handled baseline. A classifier error or relevant change without a successful notification keeps that snapshot for the next classified check, even if the page later changes or reverts. An irrelevant decision or successful notification advances the baseline and clears the snapshot. `run` invokes the LLM but has no notifier yet, so a relevant change stays unresolved and is classified again on the next run. The detection-only `watch` command refuses to advance an unresolved snapshot or a legacy `pending: true` marker. Old markers do not contain the changed content; if it is no longer on the page, manual recovery is needed. A notification may be delivered more than once if delivery succeeds but saving the baseline fails. The prompt treats monitored website content as untrusted data; the response still must pass the strict JSON contract above. No email service is connected yet.
 
 ## Local development
 
