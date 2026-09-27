@@ -25,11 +25,11 @@ def test_version_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
     assert capsys.readouterr().out.strip() == f"pagewatch {version('pagewatch-ai')}"
 
 
-def test_bare_command_does_not_claim_to_monitor(
+def test_bare_command_requires_subcommand(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main([])
 
     assert exc_info.value.code == 2
-    assert "monitoring is not implemented yet" in capsys.readouterr().err
+    assert "a command is required" in capsys.readouterr().err
