@@ -4,8 +4,10 @@ import argparse
 import sys
 from collections.abc import Sequence
 from importlib.metadata import version
+from pathlib import Path
 
 from pagewatch.content import ContentError, fetch_text
+from pagewatch.watch import WatchError, check_watch
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -22,16 +24,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     fetch = commands.add_parser("fetch", help="fetch text selected from one page")
     fetch.add_argument("url", help="HTTP or HTTPS page URL")
     fetch.add_argument("--selector", required=True, help="CSS selector to extract")
+    watch = commands.add_parser("watch", help="detect changes for one page")
+    watch.add_argument("url", help="HTTP or HTTPS page URL")
+    watch.add_argument("--selector", required=True, help="CSS selector to extract")
+    watch.add_argument(
+        "--state-file", required=True, type=Path, help="local baseline file"
+    )
 
     args = parser.parse_args(argv)
     if args.command is None:
         parser.error("a command is required")
 
     try:
-        text = fetch_text(args.url, args.selector)
-    except ContentError as exc:
+        if args.command == "fetch":
+            print(fetch_text(args.url, args.selector))
+        else:
+            status, diff = check_watch(args.url, args.selector, args.state_file)
+            print(diff or status)
+    except (ContentError, WatchError) as exc:
         print(f"pagewatch: {exc}", file=sys.stderr)
         return 1
 
-    print(text)
     return 0
