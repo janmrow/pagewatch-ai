@@ -9,7 +9,9 @@ description = "A small tool for monitoring meaningful changes on web pages"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-dependencies = []
+dependencies = [
+    "beautifulsoup4>=4.15.0",
+]
 
 [project.scripts]
 pagewatch = "pagewatch.cli:main"
