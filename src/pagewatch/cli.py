@@ -3,6 +3,7 @@
 import argparse
 import sys
 from collections.abc import Sequence
+from functools import partial
 from importlib.metadata import version
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from pagewatch.classification import ClassificationError
 from pagewatch.config import ConfigError, load_watches
 from pagewatch.content import ContentError, fetch_text
 from pagewatch.llm import classifier_from_env
+from pagewatch.mail import NotificationError, notifier_from_env
 from pagewatch.watch import WatchError, check_watch
 
 
@@ -45,7 +47,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             watches = load_watches(args.config)
             classifier = classifier_from_env()
-        except (ConfigError, ClassificationError) as exc:
+            mailer = notifier_from_env()
+        except (ConfigError, ClassificationError, NotificationError) as exc:
             print(f"pagewatch: {exc}", file=sys.stderr)
             return 1
 
@@ -58,8 +61,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.state_dir / f"{watch.id}.json",
                     interest=watch.interest,
                     classifier=classifier,
+                    notifier=partial(mailer.send, watch.id, watch.url),
                 )
-            except (ContentError, WatchError, ClassificationError) as exc:
+            except (
+                ContentError,
+                WatchError,
+                ClassificationError,
+                NotificationError,
+            ) as exc:
                 print(f"pagewatch: {watch.id}: {exc}", file=sys.stderr)
                 failed = True
                 continue

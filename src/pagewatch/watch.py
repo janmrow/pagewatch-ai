@@ -5,6 +5,7 @@ import os
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from difflib import unified_diff
 from pathlib import Path
 
@@ -34,7 +35,7 @@ def check_watch(
     *,
     interest: str | None = None,
     classifier: Callable[[str, str], str] | None = None,
-    notifier: Callable[[Classification], None] | None = None,
+    notifier: Callable[[Classification, str], None] | None = None,
 ) -> WatchResult:
     """Check one watch; classify a change before handling it when requested."""
     if classifier is not None and (interest is None or not interest.strip()):
@@ -42,13 +43,25 @@ def check_watch(
     if notifier is not None and classifier is None:
         raise ClassificationError("notification requires a classifier")
 
-    previous, pending_text, legacy_pending = _read_baseline(state_file, url, selector)
+    previous, pending_text, detected_at, legacy_pending = _read_baseline(
+        state_file, url, selector
+    )
     if pending_text is not None:
         if classifier is None:
             raise WatchError(
                 f"change pending classification or notification: {state_file}"
             )
         current = pending_text
+        if detected_at is None:
+            detected_at = datetime.now(UTC).isoformat(timespec="seconds")
+            _write_baseline(
+                state_file,
+                url,
+                selector,
+                previous,
+                pending_text=current,
+                detected_at=detected_at,
+            )
     else:
         if legacy_pending and classifier is None:
             raise WatchError(
@@ -65,7 +78,15 @@ def check_watch(
                 )
             return WatchResult("unchanged")
         if classifier is not None:
-            _write_baseline(state_file, url, selector, previous, pending_text=current)
+            detected_at = datetime.now(UTC).isoformat(timespec="seconds")
+            _write_baseline(
+                state_file,
+                url,
+                selector,
+                previous,
+                pending_text=current,
+                detected_at=detected_at,
+            )
 
     diff = "\n".join(
         unified_diff(
@@ -84,18 +105,18 @@ def check_watch(
     if not classification.relevant:
         _write_baseline(state_file, url, selector, current)
     elif notifier is not None:
-        notifier(classification)
+        notifier(classification, detected_at)
         _write_baseline(state_file, url, selector, current)
     return WatchResult("changed", diff, classification)
 
 
 def _read_baseline(
     state_file: Path, url: str, selector: str
-) -> tuple[str | None, str | None, bool]:
+) -> tuple[str | None, str | None, str | None, bool]:
     try:
         data = json.loads(state_file.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return None, None, False
+        return None, None, None, False
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise WatchError(f"could not read baseline {state_file}: {exc}") from exc
 
@@ -106,12 +127,27 @@ def _read_baseline(
         )
         or type(data.get("pending", False)) is not bool
         or ("pending_text" in data and not isinstance(data["pending_text"], str))
+        or ("detected_at" in data and "pending_text" not in data)
+        or ("detected_at" in data and not isinstance(data["detected_at"], str))
         or (data.get("pending") is True and "pending_text" in data)
     ):
         raise WatchError(f"invalid baseline file: {state_file}")
     if data["url"] != url or data["selector"] != selector:
         raise WatchError(f"baseline belongs to another URL or selector: {state_file}")
-    return data["text"], data.get("pending_text"), data.get("pending", False)
+    detected_at = data.get("detected_at")
+    if detected_at is not None:
+        try:
+            detected = datetime.fromisoformat(detected_at)
+        except ValueError as exc:
+            raise WatchError(f"invalid baseline file: {state_file}") from exc
+        if detected.utcoffset() is None:
+            raise WatchError(f"invalid baseline file: {state_file}")
+    return (
+        data["text"],
+        data.get("pending_text"),
+        detected_at,
+        data.get("pending", False),
+    )
 
 
 def _write_baseline(
@@ -121,6 +157,7 @@ def _write_baseline(
     text: str,
     *,
     pending_text: str | None = None,
+    detected_at: str | None = None,
 ) -> None:
     temporary_path = None
     try:
@@ -136,6 +173,8 @@ def _write_baseline(
             data = {"url": url, "selector": selector, "text": text}
             if pending_text is not None:
                 data["pending_text"] = pending_text
+                if detected_at is not None:
+                    data["detected_at"] = detected_at
             json.dump(data, temporary)
             temporary.write("\n")
         os.replace(temporary_path, state_file)
