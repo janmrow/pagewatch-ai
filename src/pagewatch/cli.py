@@ -6,8 +6,10 @@ from collections.abc import Sequence
 from importlib.metadata import version
 from pathlib import Path
 
+from pagewatch.classification import ClassificationError
 from pagewatch.config import ConfigError, load_watches
 from pagewatch.content import ContentError, fetch_text
+from pagewatch.llm import classifier_from_env
 from pagewatch.watch import WatchError, check_watch
 
 
@@ -42,7 +44,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "run":
         try:
             watches = load_watches(args.config)
-        except ConfigError as exc:
+            classifier = classifier_from_env()
+        except (ConfigError, ClassificationError) as exc:
             print(f"pagewatch: {exc}", file=sys.stderr)
             return 1
 
@@ -50,15 +53,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         for watch in watches:
             try:
                 result = check_watch(
-                    watch.url, watch.selector, args.state_dir / f"{watch.id}.json"
+                    watch.url,
+                    watch.selector,
+                    args.state_dir / f"{watch.id}.json",
+                    interest=watch.interest,
+                    classifier=classifier,
                 )
-            except (ContentError, WatchError) as exc:
+            except (ContentError, WatchError, ClassificationError) as exc:
                 print(f"pagewatch: {watch.id}: {exc}", file=sys.stderr)
                 failed = True
                 continue
             print(f"{watch.id}: {result.status}")
             if result.diff:
                 print(result.diff)
+            if result.classification is not None:
+                decision = result.classification
+                print(f"{watch.id}: relevant: {str(decision.relevant).lower()}")
+                print(f"{watch.id}: summary: {decision.summary}")
+                print(f"{watch.id}: reason: {decision.reason}")
         return int(failed)
 
     try:

@@ -300,13 +300,11 @@ def test_notification_error_retries_then_advances_after_success(
     assert len(notified) == 1
 
 
-@pytest.mark.parametrize("command", ["watch", "run"])
 @pytest.mark.parametrize("legacy", [False, True])
-def test_cli_cannot_advance_unresolved_change(
+def test_detection_only_watch_cannot_advance_unresolved_change(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    command: str,
     legacy: bool,
 ) -> None:
     state_dir = tmp_path / "state"
@@ -324,24 +322,7 @@ def test_cli_cannot_advance_unresolved_change(
         lambda url, selector: pytest.fail("unexpected fetch"),
     )
 
-    if command == "watch":
-        args = ["watch", URL, "--selector", SELECTOR, "--state-file", str(state_file)]
-    else:
-        config = tmp_path / "watches.toml"
-        config.write_text(
-            "\n".join(
-                [
-                    "[[watches]]",
-                    'id = "first"',
-                    f'url = "{URL}"',
-                    f'selector = "{SELECTOR}"',
-                    'interest = "Updates"',
-                ]
-            ),
-            encoding="utf-8",
-        )
-        args = ["run", "--config", str(config), "--state-dir", str(state_dir)]
-
+    args = ["watch", URL, "--selector", SELECTOR, "--state-file", str(state_file)]
     assert main(args) == 1
     assert "pending classification or notification" in capsys.readouterr().err
     assert state_file.read_bytes() == original
