@@ -28,7 +28,7 @@ def fetch_text(url: str, selector: str) -> str:
             encoding = response.headers.get_content_charset()
     except HTTPError as exc:
         raise ContentError(f"HTTP {exc.code} while fetching {url}") from exc
-    except (URLError, TimeoutError, InvalidURL) as exc:
+    except (URLError, TimeoutError, InvalidURL, UnicodeEncodeError) as exc:
         raise ContentError(f"could not fetch {url}: {exc}") from exc
 
     soup = BeautifulSoup(body, "html.parser", from_encoding=encoding)
