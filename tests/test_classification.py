@@ -106,7 +106,7 @@ def test_fake_classifier_receives_diff_only_and_handles_irrelevant_change(
     assert len(calls) == 1
 
 
-def test_relevant_change_stays_pending_without_notification(
+def test_relevant_change_is_retried_without_notification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state_file = tmp_path / "baseline.json"
@@ -135,14 +135,15 @@ def test_relevant_change_stays_pending_without_notification(
         "url": URL,
         "selector": SELECTOR,
         "text": "Deadline 10",
-        "pending": True,
+        "pending_text": "Deadline 11",
     }
 
-    with pytest.raises(WatchError, match="pending"):
-        check_watch(
-            URL, SELECTOR, state_file, interest="Deadline", classifier=fake_classifier
-        )
-    assert len(calls) == 1
+    retried = check_watch(
+        URL, SELECTOR, state_file, interest="Deadline", classifier=fake_classifier
+    )
+    assert retried.classification == result.classification
+    assert len(calls) == 2
+    assert json.loads(state_file.read_text())["pending_text"] == "Deadline 11"
 
 
 def test_failed_classification_keeps_detected_change(
@@ -168,8 +169,19 @@ def test_failed_classification_keeps_detected_change(
         "url": URL,
         "selector": SELECTOR,
         "text": "Before",
-        "pending": True,
+        "pending_text": "After",
     }
+    retried = check_watch(
+        URL,
+        SELECTOR,
+        state_file,
+        interest="Updates",
+        classifier=lambda interest, diff: (
+            '{"relevant": false, "summary": "Minor", "reason": "Outside interest"}'
+        ),
+    )
+    assert retried.classification == Classification(False, "Minor", "Outside interest")
+    assert json.loads(state_file.read_text())["text"] == "After"
 
 
 def test_classifier_error_keeps_detected_change(
@@ -198,35 +210,119 @@ def test_classifier_error_keeps_detected_change(
         "url": URL,
         "selector": SELECTOR,
         "text": "Before",
-        "pending": True,
+        "pending_text": "After",
     }
+    retried = check_watch(
+        URL,
+        SELECTOR,
+        state_file,
+        interest="Updates",
+        classifier=lambda interest, diff: (
+            '{"relevant": false, "summary": "Minor", "reason": "Outside interest"}'
+        ),
+    )
+    assert retried.classification == Classification(False, "Minor", "Outside interest")
+    assert json.loads(state_file.read_text())["text"] == "After"
 
 
-@pytest.mark.parametrize("command", ["watch", "run"])
-def test_cli_cannot_advance_pending_change(
+def test_notification_error_retries_then_advances_after_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    command: str,
 ) -> None:
-    state_dir = tmp_path / "state"
-    state_file = state_dir / "first.json"
+    state_file = tmp_path / "baseline.json"
     content = {"value": "Before"}
     monkeypatch.setattr(
         "pagewatch.watch.fetch_text", lambda url, selector: content["value"]
     )
     check_watch(URL, SELECTOR, state_file)
     content["value"] = "After"
-    check_watch(
+    calls = []
+
+    def fake_classifier(interest: str, diff: str) -> str:
+        calls.append((interest, diff))
+        return '{"relevant": true, "summary": "Changed", "reason": "Matches interest"}'
+
+    def failing_notifier(classification: Classification) -> None:
+        assert classification.summary == "Changed"
+        assert json.loads(state_file.read_text())["pending_text"] == "After"
+        raise RuntimeError("SMTP unavailable")
+
+    with pytest.raises(RuntimeError, match="SMTP unavailable"):
+        check_watch(
+            URL,
+            SELECTOR,
+            state_file,
+            interest="Updates",
+            classifier=fake_classifier,
+            notifier=failing_notifier,
+        )
+    assert json.loads(state_file.read_text()) == {
+        "url": URL,
+        "selector": SELECTOR,
+        "text": "Before",
+        "pending_text": "After",
+    }
+
+    content["value"] = "Before"
+    fetch_calls = []
+
+    def unexpected_fetch(url: str, selector: str) -> str:
+        fetch_calls.append((url, selector))
+        return content["value"]
+
+    monkeypatch.setattr("pagewatch.watch.fetch_text", unexpected_fetch)
+    notified = []
+    result = check_watch(
         URL,
         SELECTOR,
         state_file,
         interest="Updates",
-        classifier=lambda interest, diff: (
-            '{"relevant": true, "summary": "Changed", "reason": "Matches interest"}'
-        ),
+        classifier=fake_classifier,
+        notifier=notified.append,
     )
-    pending_state = state_file.read_bytes()
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert fetch_calls == []
+    assert notified == [result.classification]
+    assert json.loads(state_file.read_text())["text"] == "After"
+    content["value"] = "After"
+    assert (
+        check_watch(
+            URL,
+            SELECTOR,
+            state_file,
+            interest="Updates",
+            classifier=fake_classifier,
+            notifier=notified.append,
+        ).status
+        == "unchanged"
+    )
+    assert len(notified) == 1
+
+
+@pytest.mark.parametrize("command", ["watch", "run"])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_cli_cannot_advance_unresolved_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    legacy: bool,
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    state_file = state_dir / "first.json"
+    state = {"url": URL, "selector": SELECTOR, "text": "Before"}
+    if legacy:
+        state["pending"] = True
+    else:
+        state["pending_text"] = "After"
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+    original = state_file.read_bytes()
+    monkeypatch.setattr(
+        "pagewatch.watch.fetch_text",
+        lambda url, selector: pytest.fail("unexpected fetch"),
+    )
 
     if command == "watch":
         args = ["watch", URL, "--selector", SELECTOR, "--state-file", str(state_file)]
@@ -240,12 +336,6 @@ def test_cli_cannot_advance_pending_change(
                     f'url = "{URL}"',
                     f'selector = "{SELECTOR}"',
                     'interest = "Updates"',
-                    "",
-                    "[[watches]]",
-                    'id = "second"',
-                    'url = "https://example.test/second"',
-                    'selector = "main"',
-                    'interest = "Updates"',
                 ]
             ),
             encoding="utf-8",
@@ -253,10 +343,73 @@ def test_cli_cannot_advance_pending_change(
         args = ["run", "--config", str(config), "--state-dir", str(state_dir)]
 
     assert main(args) == 1
-    output = capsys.readouterr()
-    assert "pending classification or notification" in output.err
-    assert "Traceback" not in output.err
-    assert state_file.read_bytes() == pending_state
-    if command == "run":
-        assert "second: baseline established" in output.out
-        assert (state_dir / "second.json").exists()
+    assert "pending classification or notification" in capsys.readouterr().err
+    assert state_file.read_bytes() == original
+
+
+def test_legacy_pending_marker_is_replaced_with_snapshot_on_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_file = tmp_path / "baseline.json"
+    state_file.write_text(
+        json.dumps(
+            {"url": URL, "selector": SELECTOR, "text": "Before", "pending": True}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("pagewatch.watch.fetch_text", lambda url, selector: "After")
+
+    def failing_classifier(interest: str, diff: str) -> str:
+        raise ClassificationError("provider unavailable")
+
+    with pytest.raises(ClassificationError, match="provider unavailable"):
+        check_watch(
+            URL,
+            SELECTOR,
+            state_file,
+            interest="Updates",
+            classifier=failing_classifier,
+        )
+    assert json.loads(state_file.read_text())["pending_text"] == "After"
+
+    result = check_watch(
+        URL,
+        SELECTOR,
+        state_file,
+        interest="Updates",
+        classifier=lambda interest, diff: (
+            '{"relevant": false, "summary": "Minor", "reason": "Outside interest"}'
+        ),
+    )
+    assert result.classification == Classification(False, "Minor", "Outside interest")
+    assert json.loads(state_file.read_text()) == {
+        "url": URL,
+        "selector": SELECTOR,
+        "text": "After",
+    }
+
+
+def test_legacy_pending_marker_with_reverted_page_stays_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_file = tmp_path / "baseline.json"
+    state_file.write_text(
+        json.dumps(
+            {"url": URL, "selector": SELECTOR, "text": "Before", "pending": True}
+        ),
+        encoding="utf-8",
+    )
+    original = state_file.read_bytes()
+    monkeypatch.setattr("pagewatch.watch.fetch_text", lambda url, selector: "Before")
+
+    with pytest.raises(
+        WatchError, match="legacy pending change is no longer available"
+    ):
+        check_watch(
+            URL,
+            SELECTOR,
+            state_file,
+            interest="Updates",
+            classifier=lambda interest, diff: pytest.fail("unexpected classification"),
+        )
+    assert state_file.read_bytes() == original

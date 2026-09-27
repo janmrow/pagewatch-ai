@@ -52,7 +52,7 @@ The internal watcher can pass `interest` and a word-level diff to an injected cl
 {"relevant": true, "summary": "A deadline changed", "reason": "Matches the watch interest"}
 ```
 
-An irrelevant change advances the baseline. A relevant change or classifier error leaves the old baseline and a persistent pending marker. While that marker exists, `watch` and `run` report an error for that watch instead of advancing its baseline; notification handling is not implemented yet. This contract is tested with fakes. The CLI does not invoke a classifier yet, and no LLM API is connected.
+Before classification, the watcher saves one unresolved content snapshot alongside the last handled baseline. A classifier error or relevant change without a successful notification keeps that snapshot for the next classified check, even if the page later changes or reverts. An irrelevant decision or successful notification advances the baseline and clears the snapshot. Detection-only `watch` and `run` refuse to advance a watch with an unresolved snapshot or a legacy `pending: true` marker. Old markers do not contain the changed content; if it is no longer on the page, manual recovery is needed. A notification may be delivered more than once if delivery succeeds but saving the baseline fails. This contract is tested with fakes. The CLI still does not invoke a classifier or notifier, and no LLM API or email service is connected.
 
 ## Local development
 
@@ -65,7 +65,7 @@ uv run pagewatch --version
 ./scripts/verify.sh
 ```
 
-The verify script runs Ruff lint and format checks plus pytest. Python 3.11 or newer is required.
+The verify script runs Ruff lint and format checks plus pytest. Python 3.11 or newer is required. GitHub Actions runs it for pull requests and pushes to `main` with Python 3.11 and 3.14.
 
 ## License
 
