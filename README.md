@@ -42,7 +42,17 @@ interest = "New announcements"
 uv run pagewatch run --config watches.toml --state-dir .pagewatch
 ```
 
-Each watch needs `id`, `url`, `selector`, and nonempty `interest`. IDs must be unique and contain only letters, digits, hyphens, or underscores, beginning with a letter or digit. Each baseline is saved as `<state-dir>/<id>.json`. `interest` is loaded but not used until relevance classification is implemented. All watches run even if one fails; the command exits with status 1 if any watch fails. TOML parsing and field validation run before any watch.
+Each watch needs `id`, `url`, `selector`, and nonempty `interest`. IDs must be unique and contain only letters, digits, hyphens, or underscores, beginning with a letter or digit. Each baseline is saved as `<state-dir>/<id>.json`. All watches run even if one fails; the command exits with status 1 if any watch fails. TOML parsing and field validation run before any watch.
+
+## Relevance classification contract
+
+The internal watcher can pass `interest` and a word-level diff to an injected classifier. Its response must be JSON with exactly these fields:
+
+```json
+{"relevant": true, "summary": "A deadline changed", "reason": "Matches the watch interest"}
+```
+
+An irrelevant change advances the baseline. A relevant change or classifier error leaves the old baseline and a persistent pending marker. While that marker exists, `watch` and `run` report an error for that watch instead of advancing its baseline; notification handling is not implemented yet. This contract is tested with fakes. The CLI does not invoke a classifier yet, and no LLM API is connected.
 
 ## Local development
 

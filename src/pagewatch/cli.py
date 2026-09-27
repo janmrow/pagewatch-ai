@@ -49,24 +49,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         failed = False
         for watch in watches:
             try:
-                status, diff = check_watch(
+                result = check_watch(
                     watch.url, watch.selector, args.state_dir / f"{watch.id}.json"
                 )
             except (ContentError, WatchError) as exc:
                 print(f"pagewatch: {watch.id}: {exc}", file=sys.stderr)
                 failed = True
                 continue
-            print(f"{watch.id}: {status}")
-            if diff:
-                print(diff)
+            print(f"{watch.id}: {result.status}")
+            if result.diff:
+                print(result.diff)
         return int(failed)
 
     try:
         if args.command == "fetch":
             print(fetch_text(args.url, args.selector))
         else:
-            status, diff = check_watch(args.url, args.selector, args.state_file)
-            print(diff or status)
+            result = check_watch(args.url, args.selector, args.state_file)
+            print(result.diff or result.status)
     except (ContentError, WatchError) as exc:
         print(f"pagewatch: {exc}", file=sys.stderr)
         return 1
