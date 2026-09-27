@@ -1,6 +1,7 @@
 """Structured classifier response contract."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,13 @@ from pagewatch.watch import WatchError, check_watch
 
 URL = "https://example.test/page"
 SELECTOR = "main"
+
+
+def read_pending_state(state_file: Path) -> tuple[dict[str, str], str]:
+    state = json.loads(state_file.read_text())
+    detected_at = state.pop("detected_at")
+    assert datetime.fromisoformat(detected_at).utcoffset() == UTC.utcoffset(None)
+    return state, detected_at
 
 
 def test_accepts_structured_decision() -> None:
@@ -131,7 +139,8 @@ def test_relevant_change_is_retried_without_notification(
     assert result.classification == Classification(
         True, "Deadline moved", "Matches interest"
     )
-    assert json.loads(state_file.read_text()) == {
+    state, detected_at = read_pending_state(state_file)
+    assert state == {
         "url": URL,
         "selector": SELECTOR,
         "text": "Deadline 10",
@@ -144,6 +153,7 @@ def test_relevant_change_is_retried_without_notification(
     assert retried.classification == result.classification
     assert len(calls) == 2
     assert json.loads(state_file.read_text())["pending_text"] == "Deadline 11"
+    assert read_pending_state(state_file)[1] == detected_at
 
 
 def test_failed_classification_keeps_detected_change(
@@ -165,7 +175,8 @@ def test_failed_classification_keeps_detected_change(
             interest="Updates",
             classifier=lambda interest, diff: "not JSON",
         )
-    assert json.loads(state_file.read_text()) == {
+    state, _ = read_pending_state(state_file)
+    assert state == {
         "url": URL,
         "selector": SELECTOR,
         "text": "Before",
@@ -206,7 +217,8 @@ def test_classifier_error_keeps_detected_change(
             interest="Updates",
             classifier=failing_classifier,
         )
-    assert json.loads(state_file.read_text()) == {
+    state, _ = read_pending_state(state_file)
+    assert state == {
         "url": URL,
         "selector": SELECTOR,
         "text": "Before",
@@ -242,9 +254,10 @@ def test_notification_error_retries_then_advances_after_success(
         calls.append((interest, diff))
         return '{"relevant": true, "summary": "Changed", "reason": "Matches interest"}'
 
-    def failing_notifier(classification: Classification) -> None:
+    def failing_notifier(classification: Classification, detected_at: str) -> None:
         assert classification.summary == "Changed"
         assert json.loads(state_file.read_text())["pending_text"] == "After"
+        assert detected_at == read_pending_state(state_file)[1]
         raise RuntimeError("SMTP unavailable")
 
     with pytest.raises(RuntimeError, match="SMTP unavailable"):
@@ -256,7 +269,8 @@ def test_notification_error_retries_then_advances_after_success(
             classifier=fake_classifier,
             notifier=failing_notifier,
         )
-    assert json.loads(state_file.read_text()) == {
+    state, detected_at = read_pending_state(state_file)
+    assert state == {
         "url": URL,
         "selector": SELECTOR,
         "text": "Before",
@@ -272,18 +286,22 @@ def test_notification_error_retries_then_advances_after_success(
 
     monkeypatch.setattr("pagewatch.watch.fetch_text", unexpected_fetch)
     notified = []
+
+    def record_notification(classification: Classification, time: str) -> None:
+        notified.append((classification, time))
+
     result = check_watch(
         URL,
         SELECTOR,
         state_file,
         interest="Updates",
         classifier=fake_classifier,
-        notifier=notified.append,
+        notifier=record_notification,
     )
     assert len(calls) == 2
     assert calls[0] == calls[1]
     assert fetch_calls == []
-    assert notified == [result.classification]
+    assert notified == [(result.classification, detected_at)]
     assert json.loads(state_file.read_text())["text"] == "After"
     content["value"] = "After"
     assert (
@@ -293,11 +311,53 @@ def test_notification_error_retries_then_advances_after_success(
             state_file,
             interest="Updates",
             classifier=fake_classifier,
-            notifier=notified.append,
+            notifier=record_notification,
         ).status
         == "unchanged"
     )
     assert len(notified) == 1
+
+
+def test_existing_pending_snapshot_gets_stable_detection_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_file = tmp_path / "baseline.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "url": URL,
+                "selector": SELECTOR,
+                "text": "Before",
+                "pending_text": "After",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "pagewatch.watch.fetch_text",
+        lambda url, selector: pytest.fail("unexpected fetch"),
+    )
+    notified = []
+
+    def failing_notifier(decision: Classification, detected_at: str) -> None:
+        notified.append(detected_at)
+        raise RuntimeError("SMTP unavailable")
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="SMTP unavailable"):
+            check_watch(
+                URL,
+                SELECTOR,
+                state_file,
+                interest="Updates",
+                classifier=lambda interest, diff: (
+                    '{"relevant": true, "summary": "Changed", "reason": "Matches"}'
+                ),
+                notifier=failing_notifier,
+            )
+    state, detected_at = read_pending_state(state_file)
+    assert state["pending_text"] == "After"
+    assert notified == [detected_at, detected_at]
 
 
 @pytest.mark.parametrize("legacy", [False, True])

@@ -25,6 +25,11 @@ interest = "Announcement updates"
 """
 
 
+@pytest.fixture(autouse=True)
+def stub_mailer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("pagewatch.cli.notifier_from_env", lambda: MagicMock())
+
+
 def fake_classifier(interest: str, diff: str) -> str:
     return '{"relevant": false, "summary": "Minor edit", "reason": "Outside interest"}'
 

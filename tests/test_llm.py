@@ -1,21 +1,30 @@
 """OpenAI-compatible classifier and configured CLI integration."""
 
 import json
+from datetime import UTC, datetime
 from http.client import BadStatusLine, IncompleteRead
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import MagicMock
 from urllib.error import HTTPError
 from urllib.request import HTTPHandler, HTTPRedirectHandler, HTTPSHandler, Request
 from urllib.response import addinfourl
 
 import pytest
 
-from pagewatch.classification import ClassificationError
+from pagewatch.classification import Classification, ClassificationError
 from pagewatch.cli import main
 from pagewatch.llm import _OPENER, ChatCompletionsClassifier, _NoRedirect
 
 URL = "https://example.test/news"
 API_URL = "https://example.test/v1/chat/completions"
+
+
+@pytest.fixture(autouse=True)
+def stub_mailer(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    mailer = MagicMock()
+    monkeypatch.setattr("pagewatch.cli.notifier_from_env", lambda: mailer)
+    return mailer
 
 
 def test_chat_completions_request_uses_only_interest_and_diff(
@@ -177,10 +186,11 @@ def test_run_rejects_non_https_api_url_before_fetch(
     assert "PAGEWATCH_LLM_URL must be an HTTPS endpoint" in capsys.readouterr().err
 
 
-def test_run_classifies_change_and_preserves_relevant_snapshot(
+def test_run_classifies_and_notifies_relevant_change(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    stub_mailer: MagicMock,
 ) -> None:
     config = tmp_path / "watches.toml"
     config.write_text(
@@ -220,16 +230,21 @@ def test_run_classifies_change_and_preserves_relevant_snapshot(
     assert json.loads((state_dir / "news.json").read_text()) == {
         "url": URL,
         "selector": "main",
-        "text": "Deadline 10",
-        "pending_text": "Deadline 11",
+        "text": "Deadline 11",
     }
-
-    content["value"] = "Deadline 10"
-    assert main(args) == 0
-    assert len(requests) == 2
-    assert json.loads((state_dir / "news.json").read_text())["pending_text"] == (
-        "Deadline 11"
+    stub_mailer.send.assert_called_once()
+    sent = stub_mailer.send.call_args.args
+    assert sent[:3] == (
+        "news",
+        URL,
+        Classification(True, "Deadline moved", "Matches dates"),
     )
+    assert datetime.fromisoformat(sent[3]).utcoffset() == UTC.utcoffset(None)
+
+    content["value"] = "Deadline 11"
+    assert main(args) == 0
+    assert len(requests) == 1
+    stub_mailer.send.assert_called_once()
 
 
 @pytest.mark.parametrize(
