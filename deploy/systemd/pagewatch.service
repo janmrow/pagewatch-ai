@@ -1,0 +1,16 @@
+[Unit]
+Description=Check configured Pagewatch AI watches
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=pagewatch
+Group=pagewatch
+WorkingDirectory=/opt/pagewatch
+EnvironmentFile=/etc/pagewatch/pagewatch.env
+StateDirectory=pagewatch
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ExecStart=/opt/pagewatch/.venv/bin/pagewatch run --config /etc/pagewatch/watches.toml --state-dir /var/lib/pagewatch

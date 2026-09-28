@@ -80,6 +80,8 @@ uv run pagewatch --version
 
 The verify script runs Ruff lint and format checks plus pytest. Python 3.11 or newer is required. GitHub Actions runs it for pull requests and pushes to `main` with Python 3.11 and 3.14.
 
+For a manual Ubuntu/systemd installation, see [docs/deployment.md](docs/deployment.md).
+
 ## License
 
 MIT; see [LICENSE](LICENSE).
