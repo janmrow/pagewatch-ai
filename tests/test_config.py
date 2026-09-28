@@ -1,6 +1,7 @@
 """Configured watch loading and batch execution checks."""
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -93,10 +94,10 @@ def test_run_uses_separate_baselines(
 
     content["first"] = "Price 11"
     assert main(args) == 0
-    output = capsys.readouterr().out
-    assert "first: changed" in output
-    assert "-10" in output and "+11" in output
-    assert "second: unchanged" in output
+    output = capsys.readouterr()
+    assert output.out.splitlines() == ["first: changed", "second: unchanged"]
+    assert "INFO watch=first change detected" in output.err
+    assert "Price 11" not in output.err
     assert json.loads((state_dir / "first.json").read_text())["text"] == "Price 11"
     assert json.loads((state_dir / "second.json").read_text())["text"] == "News today"
 
@@ -117,10 +118,64 @@ def test_one_failed_watch_does_not_stop_others(
     monkeypatch.setattr("pagewatch.watch.fetch_text", fetch)
     assert main(["run", "--config", str(config), "--state-dir", str(state_dir)]) == 1
     output = capsys.readouterr()
-    assert "first: HTTP 500" in output.err
+    assert "ERROR watch=first fetch failed" in output.err
+    assert "HTTP 500" not in output.err
     assert "second: baseline established" in output.out
     assert not (state_dir / "first.json").exists()
     assert (state_dir / "second.json").exists()
+
+
+def test_run_reports_state_failure_after_notification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = tmp_path / "watches.toml"
+    config.write_text(
+        '[[watches]]\nid = "first"\nurl = "https://example.test/first"\n'
+        'selector = "main"\ninterest = "Updates"\n',
+        encoding="utf-8",
+    )
+    state_dir = tmp_path / "state"
+    content = {"value": "Before"}
+    monkeypatch.setattr(
+        "pagewatch.watch.fetch_text", lambda url, selector: content["value"]
+    )
+    monkeypatch.setattr(
+        "pagewatch.cli.classifier_from_env",
+        lambda: (
+            lambda interest, diff: (
+                '{"relevant": true, "summary": "Changed", "reason": "Matches"}'
+            )
+        ),
+    )
+    mailer = MagicMock()
+    monkeypatch.setattr("pagewatch.cli.notifier_from_env", lambda: mailer)
+    args = ["run", "--config", str(config), "--state-dir", str(state_dir)]
+    assert main(args) == 0
+    capsys.readouterr()
+
+    content["value"] = "After"
+    replace = os.replace
+    calls = 0
+
+    def fail_final_replace(source: Path, target: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("disk unavailable")
+        replace(source, target)
+
+    monkeypatch.setattr("pagewatch.watch.os.replace", fail_final_replace)
+    assert main(args) == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "INFO watch=first notification sent" in output.err
+    assert "ERROR watch=first state operation failed" in output.err
+    assert "INFO watch=first state advanced" not in output.err
+    assert "disk unavailable" not in output.err
+    assert mailer.send.call_count == 1
+    assert json.loads((state_dir / "first.json").read_text())["pending_text"] == (
+        "After"
+    )
 
 
 def test_url_encoding_error_does_not_stop_other_watches(
@@ -146,7 +201,7 @@ def test_url_encoding_error_does_not_stop_other_watches(
     monkeypatch.setattr("pagewatch.content.urlopen", open_page)
     assert main(["run", "--config", str(config), "--state-dir", str(state_dir)]) == 1
     output = capsys.readouterr()
-    assert "first: could not fetch" in output.err
+    assert "ERROR watch=first fetch failed" in output.err
     assert "Traceback" not in output.err
     assert "second: baseline established" in output.out
     assert not (state_dir / "first.json").exists()

@@ -217,15 +217,29 @@ def test_run_classifies_and_notifies_relevant_change(
     args = ["run", "--config", str(config), "--state-dir", str(state_dir)]
 
     assert main(args) == 0
-    assert capsys.readouterr().out.strip() == "news: baseline established"
+    baseline_output = capsys.readouterr()
+    assert baseline_output.out.strip() == "news: baseline established"
+    assert baseline_output.err.splitlines() == [
+        "INFO watch=news check started",
+        "INFO watch=news fetch succeeded",
+        "INFO watch=news state advanced",
+    ]
     assert requests == []
 
     content["value"] = "Deadline 11"
     assert main(args) == 0
-    output = capsys.readouterr().out
-    assert "news: relevant: true" in output
-    assert "news: summary: Deadline moved" in output
-    assert "news: reason: Matches dates" in output
+    output = capsys.readouterr()
+    assert output.out.strip() == "news: changed"
+    assert output.err.splitlines() == [
+        "INFO watch=news check started",
+        "INFO watch=news fetch succeeded",
+        "INFO watch=news change detected",
+        "INFO watch=news classification relevant=true",
+        "INFO watch=news notification sent",
+        "INFO watch=news state advanced",
+    ]
+    assert "Deadline" not in output.out + output.err
+    assert "secret-key" not in output.out + output.err
     assert len(requests) == 1
     assert json.loads((state_dir / "news.json").read_text()) == {
         "url": URL,
@@ -248,11 +262,11 @@ def test_run_classifies_and_notifies_relevant_change(
 
 
 @pytest.mark.parametrize(
-    ("failure", "message"),
+    "failure",
     [
-        ("http", "LLM API returned HTTP 503"),
-        ("incomplete", "incomplete LLM API response"),
-        ("protocol", "invalid LLM API protocol response"),
+        "http",
+        "incomplete",
+        "protocol",
     ],
 )
 def test_run_continues_after_one_llm_api_failure(
@@ -260,7 +274,6 @@ def test_run_continues_after_one_llm_api_failure(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     failure: str,
-    message: str,
 ) -> None:
     config = tmp_path / "watches.toml"
     config.write_text(
@@ -312,8 +325,10 @@ interest = "Prices"
     content.update(first="After", second="After")
     assert main(args) == 1
     output = capsys.readouterr()
-    assert f"first: {message}" in output.err
-    assert "second: relevant: false" in output.out
+    assert "ERROR watch=first classifier request failed" in output.err
+    assert "INFO watch=second classification relevant=false" in output.err
+    assert output.out.strip() == "second: changed"
+    assert "secret-key" not in output.err
     assert json.loads((state_dir / "first.json").read_text())["pending_text"] == (
         "After"
     )

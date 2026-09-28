@@ -249,8 +249,9 @@ interest = "Prices"
     content.update(first="After", second="After")
     assert main(args) == 1
     output = capsys.readouterr()
-    assert "first: could not send email" in output.err
-    assert "second: relevant: true" in output.out
+    assert "ERROR watch=first notification failed" in output.err
+    assert "INFO watch=second classification relevant=true" in output.err
+    assert output.out.strip() == "second: changed"
     first_state = json.loads((state_dir / "first.json").read_text())
     detected_at = first_state["detected_at"]
     assert datetime.fromisoformat(detected_at).utcoffset() is not None
@@ -262,7 +263,9 @@ interest = "Prices"
     failed["first"] = False
     content["first"] = "Before"
     assert main(args) == 0
-    assert "first: relevant: true" in capsys.readouterr().out
+    retry_output = capsys.readouterr()
+    assert retry_output.out.strip() == "first: changed\nsecond: unchanged"
+    assert "INFO watch=first notification sent" in retry_output.err
     assert json.loads((state_dir / "first.json").read_text()) == {
         "url": "https://example.test/first",
         "selector": "main",

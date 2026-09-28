@@ -1,6 +1,7 @@
 """Persist one watch baseline and report content changes."""
 
 import json
+import logging
 import os
 import tempfile
 from collections.abc import Callable
@@ -15,6 +16,8 @@ from pagewatch.classification import (
     parse_classification,
 )
 from pagewatch.content import fetch_text
+
+_LOG = logging.getLogger("pagewatch.runtime")
 
 
 class WatchError(Exception):
@@ -36,8 +39,11 @@ def check_watch(
     interest: str | None = None,
     classifier: Callable[[str, str], str] | None = None,
     notifier: Callable[[Classification, str], None] | None = None,
+    watch_id: str | None = None,
 ) -> WatchResult:
     """Check one watch; classify a change before handling it when requested."""
+    if watch_id is not None:
+        _LOG.info("watch=%s check started", watch_id)
     if classifier is not None and (interest is None or not interest.strip()):
         raise ClassificationError("classification requires watch interest")
     if notifier is not None and classifier is None:
@@ -68,14 +74,20 @@ def check_watch(
                 f"change pending classification or notification: {state_file}"
             )
         current = fetch_text(url, selector)
+        if watch_id is not None:
+            _LOG.info("watch=%s fetch succeeded", watch_id)
         if previous is None:
             _write_baseline(state_file, url, selector, current)
+            if watch_id is not None:
+                _LOG.info("watch=%s state advanced", watch_id)
             return WatchResult("baseline established")
         if current == previous:
             if legacy_pending:
                 raise WatchError(
                     f"legacy pending change is no longer available: {state_file}"
                 )
+            if watch_id is not None:
+                _LOG.info("watch=%s unchanged", watch_id)
             return WatchResult("unchanged")
         if classifier is not None:
             detected_at = datetime.now(UTC).isoformat(timespec="seconds")
@@ -88,6 +100,9 @@ def check_watch(
                 detected_at=detected_at,
             )
 
+    if watch_id is not None:
+        _LOG.info("watch=%s change detected", watch_id)
+
     diff = "\n".join(
         unified_diff(
             previous.split(),
@@ -99,14 +114,39 @@ def check_watch(
     )
     if classifier is None:
         _write_baseline(state_file, url, selector, current)
+        if watch_id is not None:
+            _LOG.info("watch=%s state advanced", watch_id)
         return WatchResult("changed", diff)
 
-    classification = parse_classification(classifier(interest, diff))
+    try:
+        response = classifier(interest, diff)
+    except ClassificationError:
+        if watch_id is not None:
+            _LOG.error("watch=%s classifier request failed", watch_id)
+        raise
+    try:
+        classification = parse_classification(response)
+    except ClassificationError:
+        if watch_id is not None:
+            _LOG.error("watch=%s classification response invalid", watch_id)
+        raise
+    if watch_id is not None:
+        _LOG.info(
+            "watch=%s classification relevant=%s",
+            watch_id,
+            str(classification.relevant).lower(),
+        )
     if not classification.relevant:
         _write_baseline(state_file, url, selector, current)
+        if watch_id is not None:
+            _LOG.info("watch=%s state advanced", watch_id)
     elif notifier is not None:
         notifier(classification, detected_at)
+        if watch_id is not None:
+            _LOG.info("watch=%s notification sent", watch_id)
         _write_baseline(state_file, url, selector, current)
+        if watch_id is not None:
+            _LOG.info("watch=%s state advanced", watch_id)
     return WatchResult("changed", diff, classification)
 
 
