@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Pagewatch AI at 08:00, 12:00, and 16:00 Warsaw time
+
+[Timer]
+OnCalendar=*-*-* 08,12,16:00:00 Europe/Warsaw
+Persistent=true
+Unit=pagewatch.service
+
+[Install]
+WantedBy=timers.target
