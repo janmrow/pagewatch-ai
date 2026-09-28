@@ -1,6 +1,7 @@
 """Command-line entry point for Pagewatch."""
 
 import argparse
+import logging
 import sys
 from collections.abc import Sequence
 from functools import partial
@@ -13,6 +14,8 @@ from pagewatch.content import ContentError, fetch_text
 from pagewatch.llm import classifier_from_env
 from pagewatch.mail import NotificationError, notifier_from_env
 from pagewatch.watch import WatchError, check_watch
+
+_LOG = logging.getLogger("pagewatch.runtime")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -52,35 +55,42 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"pagewatch: {exc}", file=sys.stderr)
             return 1
 
-        failed = False
-        for watch in watches:
-            try:
-                result = check_watch(
-                    watch.url,
-                    watch.selector,
-                    args.state_dir / f"{watch.id}.json",
-                    interest=watch.interest,
-                    classifier=classifier,
-                    notifier=partial(mailer.send, watch.id, watch.url),
-                )
-            except (
-                ContentError,
-                WatchError,
-                ClassificationError,
-                NotificationError,
-            ) as exc:
-                print(f"pagewatch: {watch.id}: {exc}", file=sys.stderr)
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+        old_level, old_propagate = _LOG.level, _LOG.propagate
+        _LOG.addHandler(handler)
+        _LOG.setLevel(logging.INFO)
+        _LOG.propagate = False
+        try:
+            failed = False
+            for watch in watches:
+                try:
+                    result = check_watch(
+                        watch.url,
+                        watch.selector,
+                        args.state_dir / f"{watch.id}.json",
+                        interest=watch.interest,
+                        classifier=classifier,
+                        notifier=partial(mailer.send, watch.id, watch.url),
+                        watch_id=watch.id,
+                    )
+                except ContentError:
+                    _LOG.error("watch=%s fetch failed", watch.id)
+                except WatchError:
+                    _LOG.error("watch=%s state operation failed", watch.id)
+                except ClassificationError:
+                    pass  # The classifier stage logged the failure.
+                except NotificationError:
+                    _LOG.error("watch=%s notification failed", watch.id)
+                else:
+                    print(f"{watch.id}: {result.status}")
+                    continue
                 failed = True
-                continue
-            print(f"{watch.id}: {result.status}")
-            if result.diff:
-                print(result.diff)
-            if result.classification is not None:
-                decision = result.classification
-                print(f"{watch.id}: relevant: {str(decision.relevant).lower()}")
-                print(f"{watch.id}: summary: {decision.summary}")
-                print(f"{watch.id}: reason: {decision.reason}")
-        return int(failed)
+            return int(failed)
+        finally:
+            _LOG.removeHandler(handler)
+            _LOG.setLevel(old_level)
+            _LOG.propagate = old_propagate
 
     try:
         if args.command == "fetch":
